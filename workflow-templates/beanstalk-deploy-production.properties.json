@@ -1,0 +1,5 @@
+{
+    "name": "Beanstalk App Deploy",
+    "description": "Deploy AWS Elastic Beanstalk app to production environment",
+    "iconName": "MissionWired-Icon-Color"
+}

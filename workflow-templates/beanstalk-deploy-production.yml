@@ -1,0 +1,64 @@
+name: Deploy AWS Elastic Beanstalk app to production environment
+
+# Run workflow automatically on push to main.
+# Allow invocation through Github UI.
+on:
+  push:
+    branches:
+      - $default-branch
+  workflow_dispatch:
+
+env:
+  BEANSTALK_APP_NAME: ${{ secrets.BEANSTALK_APP_NAME }}
+  BEANSTALK_PROD_ENVIRONMENT: ${{ secrets.BEANSTALK_PROD_ENVIRONMENT }}
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  BEANSTALK_DEPLOY_BUCKET: ${{ secrets.BEANSTALK_DEPLOY_BUCKET }}
+  DEPLOY_FILE: ${{ github.sha }}.deploy.zip
+  VERSION_LABEL: ver-${{ github.sha }}
+  VERSION_DESCRIPTION: commit-sha-${{ github.sha }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Create ZIP deployment package
+        run: zip -r ${DEPLOY_FILE} ./
+
+      - name: Upload package to S3 bucket
+        run: aws s3 cp ${DEPLOY_FILE} s3://${BEANSTALK_DEPLOY_BUCKET}/${BEANSTALK_APP_NAME}/${DEPLOY_FILE}
+
+      # Application versions for a given commit SHA may or may not exist.
+      # If the application version does exist, you can't overwrite it. But you also can't delete an application version if it's attached to an existing environment.
+      # So we need to determine if the application version exists and then create a new application version if necessary.
+      - name: Check if application version exists
+        id: application_version_exists
+        run: |
+          echo "::set-output name=exists::$( \
+            echo $(( \
+              $(
+                aws elasticbeanstalk describe-application-versions \
+                --application-name ${BEANSTALK_APP_NAME} \
+                --version-label ${VERSION_LABEL} \
+                | jq '.ApplicationVersions | length' \
+              ) > 0 \
+            )) \
+          )"
+
+      # If the application version does not exist, create it.
+      - name: Create application version, if necessary.
+        if: steps.application_version_exists.outputs.exists == 0
+        run: |
+          aws elasticbeanstalk create-application-version \
+          --application-name ${BEANSTALK_APP_NAME} \
+          --source-bundle S3Bucket="${BEANSTALK_DEPLOY_BUCKET}",S3Key="${BEANSTALK_APP_NAME}/${DEPLOY_FILE}" \
+          --version-label "${VERSION_LABEL}" \
+          --description "${VERSION_DESCRIPTION}"
+
+      # We assume here that we always want to deploy the application version tied to the commit SHA. This is reasonable: Main should always be deployable.
+      - name: Deploy application version
+        run: aws elasticbeanstalk update-environment --environment-name ${BEANSTALK_PROD_ENVIRONMENT} --version-label "${VERSION_LABEL}"
